@@ -40,12 +40,15 @@ TRATAMENTO DE INTERRUPÇÃO (TASK)
 static QueueHandle_t evento_botao = NULL;
 static QueueHandle_t evento_timer = NULL;
 
+//Mesa de trabalho do botão
+//ISR -> interrupt service routine
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
     uint32_t gpio_num = (uint32_t) arg;
     xQueueSendFromISR(evento_botao, &gpio_num, NULL);
 }
 
+//Mesa de trabalho do timer, separando espaço de memória para o mesmo
 typedef struct {
     uint64_t evento_contador;
 }propriedades_fila_timer_t;
@@ -134,14 +137,21 @@ static void gpio_task_led_botao(void* arg)
 ÁREA DE FUNÇÃO: INTERRUPÇÃO FIM
 ========================================================================================================*/
 
+//Tratador de interrupção (CALLBACK) do GPTimer - ou seja, é executada sempre que o timer dispara
+//Parâmetros: gptimer_handle_t timer: identificador do timer que chamou essa função.
+//const gptimer_alarm_event_data_t *edata: estrutura que contém o valor atual do timer no momento da interrupção.
+//void *user_fila: ponteiro que aponta para a fila que a tarefa de relógio está usando.
 static bool IRAM_ATTR timer_relogio(gptimer_handle_t timer, const gptimer_alarm_event_data_t *edata, void *user_fila)
 {
+    //Verifica se alguma tarefa de maior prioridade
     BaseType_t high_task_awoken = pdFALSE;
+    //Setando a fila do relógio
     QueueHandle_t fila_timer = (QueueHandle_t)user_fila;
 
-    // Apenas sinaliza que 1 segundo se passou
+    // cria uma instancia de relogio_t e penas sinaliza que 1 segundo se passou
     relogio_t evento_relogio = {0};
 
+    //envio da fila da interrupção
     xQueueSendFromISR(fila_timer, &evento_relogio, &high_task_awoken);
 
     // Reconfigura o alarme para o próximo segundo (1.000.000 us = 1 s)
@@ -149,10 +159,10 @@ static bool IRAM_ATTR timer_relogio(gptimer_handle_t timer, const gptimer_alarm_
         .alarm_count = edata->alarm_value + 1000000,
     };
     gptimer_set_alarm_action(timer, &alarm_config);
-    //este
     return (high_task_awoken == pdTRUE);
 }
 
+//inicia e configura um temporizador; cria uma fila para os sinais do timer.
 static void gptimer_task(void* arg){
 
     propriedades_fila_timer_t elemento_fila;
@@ -163,6 +173,7 @@ static void gptimer_task(void* arg){
     relogio.minuto = 0;
     relogio.hora = 0;
 
+    //retorno caso a criação da fila nao dê certo
     if (!fila_timer) {
         ESP_LOGE(TAG_Timer, "Criação fila_timer falho");
         return;
@@ -172,6 +183,7 @@ static void gptimer_task(void* arg){
 
     gptimer_handle_t gptimer = NULL;
 
+    //configurações do gptimer
     gptimer_config_t timer_config = {
         .clk_src = GPTIMER_CLK_SRC_DEFAULT, //fonte clock
         .direction = GPTIMER_COUNT_UP, //contagem crescente
@@ -185,7 +197,9 @@ static void gptimer_task(void* arg){
         .on_alarm = timer_relogio, //chamada de atribuição de dados
     };
 
+    //Cria um timer com resolução de 1 MHz (microsegundo)
     ESP_ERROR_CHECK(gptimer_register_event_callbacks(gptimer, &cbs, fila_timer));
+    //Ativa e inicializa o timer;
     ESP_ERROR_CHECK(gptimer_enable(gptimer));
 
     ESP_LOGI(TAG_Timer, "Start timer CV1, stop it at alarm event");
@@ -193,6 +207,7 @@ static void gptimer_task(void* arg){
         .alarm_count = 100000, // period = 100ms
     };
 
+    //Define o primeiro alarme para ocorrer após 100 ms
     ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config1));
     ESP_ERROR_CHECK(gptimer_start(gptimer));
 
@@ -216,8 +231,6 @@ static void gptimer_task(void* arg){
         }
     }
 }
-
-
 
 void app_main(void){
     /* Print chip information */
@@ -256,7 +269,6 @@ void app_main(void){
     }
 
     //create a queue to handle gpio event from isr
-
     evento_botao = xQueueCreate(10, sizeof(uint32_t));
     evento_timer = xQueueCreate(10, sizeof(propriedades_fila_timer_t));
 
