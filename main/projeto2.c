@@ -15,15 +15,33 @@
 #include "driver/gpio.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
+#include "soc/soc_caps.h"
 #include "esp_log.h"
 #include "driver/gptimer.h"
 #include "driver/ledc.h"
 #include "esp_err.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "esp_lcd_panel_io.h"
+#include "esp_lcd_panel_ops.h"
+#include "driver/i2c_master.h"
+#include "esp_lvgl_port.h"
+#include "lvgl.h"
 
 static const char *TAG = "MyModule";
 static const char *TAG_GPIO = "GPIO";
 static const char *TAG_Timer = "GPTimer";
 static const char *TAG_pwm = "PWM";
+static const char *TAG_adc = "ADC";
+static const char *TAG_led = "OLED";
+
+#if CONFIG_LCD_CONTROLLER_SH1107
+#include "esp_lcd_sh1107.h"
+#else
+#include "esp_lcd_panel_vendor.h"
+#endif
+
 
 /*========================================================================================================
 ÁREA DE FUNÇÃO: botões
@@ -60,10 +78,41 @@ SEÇÃO DE CONFIGURAÇÃO DE LEDS DO PWM
 #define LEDC_DUTY2 (4096)                // Set duty to 50%. (2 ** 13) * 50% = 4096 muda a intencidade do brilho
 #define LEDC_FREQUENCY2 (5000)           // Frequency in Hertz. Set frequency at 4 kHz
 
+#define ADC1_CHAN0 ADC_CHANNEL_3
+#define ADC_ATTEN ADC_ATTEN_DB_12
+
+#define I2C_BUS_PORT  0
+#define LCD_PIXEL_CLOCK_HZ    (400 * 1000)
+#define PIN_NUM_SDA           19
+#define PIN_NUM_SCL           18
+#define PIN_NUM_RST           -1
+#define I2C_HW_ADDR           0x3C
+
+// The pixel number in horizontal and vertical
+
+#define LCD_H_RES              128
+#define LCD_V_RES              64
+
+// Bit number used to represent command and parameter
+#define LCD_CMD_BITS           8
+#define LCD_PARAM_BITS         8
+
+
 static QueueHandle_t evento_botao = NULL;
 static QueueHandle_t evento_timer = NULL;
 static QueueHandle_t pwm_queue = NULL;
 static SemaphoreHandle_t semaphore_pwm = NULL;
+static QueueHandle_t evento_adc = NULL;
+static QueueHandle_t evento_oled = NULL;
+
+static int adc_raw[1][10];
+static int voltage[1][10];
+static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
+static void adc_calibration_deinit(adc_cali_handle_t handle);
+
+
+//teste do label
+lv_obj_t *label = NULL;
 
 // Mesa de trabalho do botão
 // ISR -> interrupt service routine
@@ -397,6 +446,229 @@ static void ledc_task(void *arg)
     }
 }
 
+/*---------------------------------------------------------------
+        ADC Calibration
+---------------------------------------------------------------*/
+static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle)
+{
+    adc_cali_handle_t handle = NULL;
+    esp_err_t ret = ESP_FAIL;
+    bool calibrated = false;
+
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    if (!calibrated)
+    {
+        ESP_LOGI(TAG_adc, "calibration scheme version is %s", "Curve Fitting");
+        adc_cali_curve_fitting_config_t cali_config = {
+            .unit_id = unit,
+            .chan = channel,
+            .atten = atten,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        ret = adc_cali_create_scheme_curve_fitting(&cali_config, &handle);
+        if (ret == ESP_OK)
+        {
+            calibrated = true;
+        }
+    }
+#endif
+
+#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    if (!calibrated)
+    {
+        ESP_LOGI(TAG_adc, "calibration scheme version is %s", "Line Fitting");
+        adc_cali_line_fitting_config_t cali_config = {
+            .unit_id = unit,
+            .atten = atten,
+            .bitwidth = ADC_BITWIDTH_DEFAULT,
+        };
+        ret = adc_cali_create_scheme_line_fitting(&cali_config, &handle);
+        if (ret == ESP_OK)
+        {
+            calibrated = true;
+        }
+    }
+#endif
+
+    *out_handle = handle;
+    if (ret == ESP_OK)
+    {
+        ESP_LOGI(TAG_adc, "Calibration Success");
+    }
+    else if (ret == ESP_ERR_NOT_SUPPORTED || !calibrated)
+    {
+        ESP_LOGW(TAG_adc, "eFuse not burnt, skip software calibration");
+    }
+    else
+    {
+        ESP_LOGE(TAG_adc, "Invalid arg or no memory");
+    }
+
+    return calibrated;
+}
+
+static void adc_calibration_deinit(adc_cali_handle_t handle)
+{
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    ESP_LOGI(TAG_adc, "deregister %s calibration scheme", "Curve Fitting");
+    ESP_ERROR_CHECK(adc_cali_delete_scheme_curve_fitting(handle));
+
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    ESP_LOGI(TAG_adc, "deregister %s calibration scheme", "Line Fitting");
+    ESP_ERROR_CHECK(adc_cali_delete_scheme_line_fitting(handle));
+#endif
+}
+
+static void adc_task(void *arg)
+{
+    //-------------ADC1 Init---------------//
+    adc_oneshot_unit_handle_t adc1_handle;
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    //-------------ADC1 Config---------------//
+    adc_oneshot_chan_cfg_t config = {
+        .atten = ADC_ATTEN,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC1_CHAN0, &config));
+
+    //-------------ADC1 Calibration Init---------------//
+    adc_cali_handle_t adc1_cali_chan0_handle = NULL;
+    bool do_calibration1_chan0 = adc_calibration_init(ADC_UNIT_1, ADC1_CHAN0, ADC_ATTEN, &adc1_cali_chan0_handle);
+
+    while (1)
+    {
+        ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC1_CHAN0, &adc_raw[0][0]));
+        ESP_LOGI(TAG_adc, "ADC%d Channel[%d] Raw Data: %d", ADC_UNIT_1 + 1, ADC1_CHAN0, adc_raw[0][0]);
+        if (do_calibration1_chan0)
+        {
+            ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc1_cali_chan0_handle, adc_raw[0][0], &voltage[0][0]));
+            ESP_LOGI(TAG_adc, "ADC%d Channel[%d] Cali Voltage: %d mV", ADC_UNIT_1 + 1, ADC1_CHAN0, voltage[0][0]);
+        }
+        char x[100];
+        sprintf(x,"voltage: %d",voltage[0][0]);
+        if(label){
+            lv_label_set_text(label, x);
+        }
+        
+    
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    // Tear Down
+    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
+    if (do_calibration1_chan0)
+    {
+        adc_calibration_deinit(adc1_cali_chan0_handle);
+    }
+}
+
+static void lvgl_escrita(lv_disp_t *disp)
+{
+    lv_obj_t *scr = lv_disp_get_scr_act(disp);
+    label = lv_label_create(scr);
+
+    lv_obj_t *label2 = lv_label_create(scr);
+
+    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR); /* Circular scroll */
+    lv_label_set_text(label, "EMBARCADOS");
+    /* Size of the screen (if you use rotation 90 or 270, please set disp->driver->ver_res) */
+    lv_obj_set_width(label, disp->driver->hor_res);
+    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 0);
+    //char x[100];
+    //int cont = 0;
+    //sprintf(x,"teste: %d",cont);
+    lv_label_set_text(label2, "Tulio aprova!");
+    //cont++;
+    
+    lv_obj_align(label2, LV_ALIGN_BOTTOM_MID, 0, 0);
+}
+
+static void oled_task(void *arg)
+{
+    ESP_LOGI(TAG_led, "Initialize I2C bus");
+    i2c_master_bus_handle_t i2c_bus = NULL;
+    i2c_master_bus_config_t bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .glitch_ignore_cnt = 7,
+        .i2c_port = I2C_BUS_PORT,
+        .sda_io_num = PIN_NUM_SDA,
+        .scl_io_num = PIN_NUM_SCL,
+        .flags.enable_internal_pullup = true,
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &i2c_bus));
+
+    ESP_LOGI(TAG_led, "Install panel IO");
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    esp_lcd_panel_io_i2c_config_t io_config = {
+        .dev_addr = I2C_HW_ADDR,
+        .scl_speed_hz = LCD_PIXEL_CLOCK_HZ,
+        .control_phase_bytes = 1,               // According to SSD1306 datasheet
+        .lcd_cmd_bits = LCD_CMD_BITS,   // According to SSD1306 datasheet
+        .lcd_param_bits = LCD_CMD_BITS, // According to SSD1306 datasheet
+        .dc_bit_offset = 6,                     // According to SSD1306 datasheet
+    };
+
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &io_config, &io_handle));
+
+    ESP_LOGI(TAG_led, "Install SSD1306 panel driver");
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    esp_lcd_panel_dev_config_t panel_config = {
+        .bits_per_pixel = 1,
+        .reset_gpio_num = PIN_NUM_RST,
+    };
+
+    esp_lcd_panel_ssd1306_config_t ssd1306_config = {
+        .height = LCD_V_RES,
+    };
+    panel_config.vendor_config = &ssd1306_config;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_ssd1306(io_handle, &panel_config, &panel_handle));
+
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
+
+
+    ESP_LOGI(TAG_led, "Initialize LVGL");
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    lvgl_port_init(&lvgl_cfg);
+
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle = io_handle,
+        .panel_handle = panel_handle,
+        .buffer_size = LCD_H_RES * LCD_V_RES,
+        .double_buffer = true,
+        .hres = LCD_H_RES,
+        .vres = LCD_V_RES,
+        .monochrome = true,
+        .rotation = {
+            .swap_xy = false,
+            .mirror_x = false,
+            .mirror_y = false,
+        }
+    };
+    lv_disp_t *disp = lvgl_port_add_disp(&disp_cfg);
+
+    /* Rotation of the screen */
+    lv_disp_set_rotation(disp, LV_DISP_ROT_NONE);
+
+    ESP_LOGI(TAG_led, "Display LVGL Scroll Text");
+    // Lock the mutex due to the LVGL APIs are not thread-safe
+    if (lvgl_port_lock(0)) {
+        lvgl_escrita(disp);
+        // Release the mutex
+        lvgl_port_unlock();
+    }
+
+    while(1){
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+
 void app_main(void)
 {
     /* Print chip information */
@@ -405,7 +677,7 @@ void app_main(void)
     uint32_t flash_size;
     esp_chip_info(&chip_info);
 
-    ESP_LOGI(TAG, "This is %s chip with %d CPU core(s), WiFi%s%s%s, ",
+    ESP_LOGI(TAG_adc, "This is %s chip with %d CPU core(s), WiFi%s%s%s, ",
              CONFIG_IDF_TARGET,
              chip_info.cores,
              (chip_info.features & CHIP_FEATURE_BT) ? "/BT" : "",
@@ -415,22 +687,22 @@ void app_main(void)
     unsigned major_rev = chip_info.revision / 100;
     unsigned minor_rev = chip_info.revision % 100;
 
-    ESP_LOGI(TAG, "silicon revision v%d.%d, ", major_rev, minor_rev);
+    ESP_LOGI(TAG_adc, "silicon revision v%d.%d, ", major_rev, minor_rev);
 
     if (esp_flash_get_size(NULL, &flash_size) != ESP_OK)
     {
-        ESP_LOGI(TAG, "Get flash size failed");
+        ESP_LOGI(TAG_adc, "Get flash size failed");
         return;
     }
 
-    ESP_LOGI(TAG, "%" PRIu32 "MB %s flash", flash_size / (uint32_t)(1024 * 1024),
+    ESP_LOGI(TAG_adc, "%" PRIu32 "MB %s flash", flash_size / (uint32_t)(1024 * 1024),
              (chip_info.features & CHIP_FEATURE_EMB_FLASH) ? "embedded" : "external");
 
-    ESP_LOGW(TAG, "Minimum free heap size: %" PRIu32 " bytes", esp_get_minimum_free_heap_size());
+    ESP_LOGW(TAG_adc, "Minimum free heap size: %" PRIu32 " bytes", esp_get_minimum_free_heap_size());
 
     for (int i = 10; i >= 0; i--)
     {
-        ESP_LOGI(TAG, "Restarting in %d seconds...", i);
+        ESP_LOGI(TAG_adc, "Restarting in %d seconds...", i);
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 
@@ -443,10 +715,18 @@ void app_main(void)
     // Cria semáforo binário para sincronização a cada 100 ms
     semaphore_pwm = xSemaphoreCreateBinary();
 
+    // Cria fila ADC
+    evento_adc = xQueueCreate(10, sizeof(uint32_t));
+
+    //cria fila oled
+    evento_oled = xQueueCreate(10, sizeof(uint64_t));
+
     // start gpio task
     xTaskCreate(gpio_task_led_botao, "gpio_task_intr", 2048, NULL, 10, NULL);
     xTaskCreate(gptimer_task, "gptimer_task_intr", 2048, NULL, 10, NULL);
     xTaskCreate(ledc_task, "ledc_task", 2048, NULL, 10, NULL);
+    xTaskCreate(adc_task, "adc_task", 4096, NULL, 10, NULL);
+    xTaskCreate(oled_task, "oled_task", 4096, NULL, 10, NULL);
 
     ESP_LOGI(TAG, "Restarting now.");
     fflush(stdout);
