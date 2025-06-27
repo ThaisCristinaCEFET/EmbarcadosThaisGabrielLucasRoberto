@@ -587,6 +587,7 @@ static void adc_task(void *arg)
 
 static void lvgl_escrita(lv_disp_t *disp)
 {
+    //escrita
     lv_obj_t *scr = lv_disp_get_scr_act(disp);
     label = lv_label_create(scr);
 
