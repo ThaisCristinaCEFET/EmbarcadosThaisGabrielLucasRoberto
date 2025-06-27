@@ -28,6 +28,7 @@
 #include "driver/i2c_master.h"
 #include "esp_lvgl_port.h"
 #include "lvgl.h"
+#include "esp_lcd_panel_vendor.h"
 
 static const char *TAG = "MyModule";
 static const char *TAG_GPIO = "GPIO";
@@ -36,11 +37,6 @@ static const char *TAG_pwm = "PWM";
 static const char *TAG_adc = "ADC";
 static const char *TAG_led = "OLED";
 
-#if CONFIG_LCD_CONTROLLER_SH1107
-#include "esp_lcd_sh1107.h"
-#else
-#include "esp_lcd_panel_vendor.h"
-#endif
 
 
 /*========================================================================================================
@@ -78,9 +74,15 @@ SEÇÃO DE CONFIGURAÇÃO DE LEDS DO PWM
 #define LEDC_DUTY2 (4096)                // Set duty to 50%. (2 ** 13) * 50% = 4096 muda a intencidade do brilho
 #define LEDC_FREQUENCY2 (5000)           // Frequency in Hertz. Set frequency at 4 kHz
 
+/*========================================================================================================
+SEÇÃO DE CONFIGURAÇÃO DO ADC
+========================================================================================================*/
 #define ADC1_CHAN0 ADC_CHANNEL_3
 #define ADC_ATTEN ADC_ATTEN_DB_12
 
+/*========================================================================================================
+SEÇÃO DE CONFIGURAÇÃO DO I2C
+========================================================================================================*/
 #define I2C_BUS_PORT  0
 #define LCD_PIXEL_CLOCK_HZ    (400 * 1000)
 #define PIN_NUM_SDA           19
@@ -113,6 +115,7 @@ static void adc_calibration_deinit(adc_cali_handle_t handle);
 
 //teste do label
 lv_obj_t *label = NULL;
+lv_obj_t *label2 = NULL;
 
 // Mesa de trabalho do botão
 // ISR -> interrupt service routine
@@ -233,7 +236,7 @@ static void gpio_task_led_botao(void *arg)
                     if (!pwm_config.automatizado)
                     {
                         pwm_config.duty = pwm_config.duty + 819;
-                        if (pwm_config.duty >= 8000)
+                        if (pwm_config.duty >= 8100)
                         {
                             pwm_config.duty = 0;
                         }
@@ -286,6 +289,7 @@ static bool IRAM_ATTR timer_relogio(gptimer_handle_t timer, const gptimer_alarm_
     gptimer_set_alarm_action(timer, &alarm_config);
 
     xSemaphoreGive(semaphore_pwm);
+    xSemaphoreGive(evento_adc);
 
     return (high_task_awoken == pdTRUE);
 }
@@ -361,6 +365,20 @@ static void gptimer_task(void *arg)
                 }
             }
             // ESP_LOGI(TAG_Timer, "Relógio: %02d:%02d:%02d", relogio.hora, relogio.minuto, relogio.segundo);
+        int cont = 0;
+
+        while(cont<=10){
+            if(cont==10){
+                char x[100];
+                sprintf(x,"Relogio: %02d:%02d:%02d", relogio.hora, relogio.minuto, relogio.segundo);
+                if(label2){
+                    lv_label_set_text(label2, x);
+                    }
+                    cont = cont+1;
+             }      
+            cont = cont+1;
+        }
+
         }
         else
         {
@@ -399,7 +417,7 @@ static void ledc_task(void *arg)
         .channel = LEDC_CHANNEL2,       // aplica o canal
         .timer_sel = LEDC_TIMER,        // não sei
         .intr_type = LEDC_INTR_DISABLE, // desabilita interrupção
-        .gpio_num = LEDC_OUTPUT_IO_33,  // led de saida do pwm
+            .gpio_num = LEDC_OUTPUT_IO_33,  // led de saida do pwm
         .duty = 0,                      // Set duty to 0%  //escolhe o duty fora da do gatilho de duty
         .hpoint = 0};
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_led1)); // avisa se der problema
@@ -428,7 +446,7 @@ static void ledc_task(void *arg)
             }
             else
             {
-                ESP_LOGI(TAG_pwm, "Modo manual: %d", pwm_config.duty);
+                //ESP_LOGI(TAG_pwm, "Modo manual: %d", pwm_config.duty);
                 ledc_channel_led0.duty = (uint32_t)pwm_config.duty;
 
                 ledc_set_duty(ledc_channel_led0.speed_mode, ledc_channel_led0.channel, ledc_channel_led0.duty);
@@ -555,7 +573,8 @@ static void adc_task(void *arg)
         }
         
     
-        vTaskDelay(pdMS_TO_TICKS(1000));
+       xSemaphoreTake(evento_adc,portMAX_DELAY);
+
     }
 
     // Tear Down
@@ -571,7 +590,7 @@ static void lvgl_escrita(lv_disp_t *disp)
     lv_obj_t *scr = lv_disp_get_scr_act(disp);
     label = lv_label_create(scr);
 
-    lv_obj_t *label2 = lv_label_create(scr);
+    label2 = lv_label_create(scr);
 
     lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR); /* Circular scroll */
     lv_label_set_text(label, "EMBARCADOS");
@@ -581,7 +600,7 @@ static void lvgl_escrita(lv_disp_t *disp)
     //char x[100];
     //int cont = 0;
     //sprintf(x,"teste: %d",cont);
-    lv_label_set_text(label2, "Tulio aprova!");
+    //lv_label_set_text(label2, "Tulio aprova!");
     //cont++;
     
     lv_obj_align(label2, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -716,7 +735,7 @@ void app_main(void)
     semaphore_pwm = xSemaphoreCreateBinary();
 
     // Cria fila ADC
-    evento_adc = xQueueCreate(10, sizeof(uint32_t));
+    evento_adc = xSemaphoreCreateBinary();
 
     //cria fila oled
     evento_oled = xQueueCreate(10, sizeof(uint64_t));
