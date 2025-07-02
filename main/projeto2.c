@@ -345,46 +345,42 @@ static void gptimer_task(void *arg)
     ESP_ERROR_CHECK(gptimer_set_alarm_action(gptimer, &alarm_config1));
     ESP_ERROR_CHECK(gptimer_start(gptimer));
 
-    while (1)
-    {
-        if (xQueueReceive(fila_timer, &elemento_fila, pdMS_TO_TICKS(2000)))
-        {
+    while (1) {
+    if (xQueueReceive(fila_timer, &elemento_fila, pdMS_TO_TICKS(2000))) {
+
+        /* conta quantos alarmes de 100 ms já chegaram */
+        static uint8_t cont100ms = 0;
+        cont100ms++;
+
+        /* a cada 10 alarmes = 1 s */
+        if (cont100ms >= 10) {
+            cont100ms = 0;          // zera para o próximo segundo
+
+            /* --- lógica de relógio --- */
             relogio.segundo++;
-            if (relogio.segundo >= 60)
-            {
+            if (relogio.segundo == 60) {
                 relogio.segundo = 0;
                 relogio.minuto++;
-                if (relogio.minuto >= 60)
-                {
+                if (relogio.minuto == 60) {
                     relogio.minuto = 0;
-                    relogio.hora++;
-                    if (relogio.hora >= 24)
-                    {
-                        relogio.hora = 0;
-                    }
+                    relogio.hora = (relogio.hora + 1) % 24;
                 }
             }
-            // ESP_LOGI(TAG_Timer, "Relógio: %02d:%02d:%02d", relogio.hora, relogio.minuto, relogio.segundo);
-        int cont = 0;
 
-        while(cont<=10){
-            if(cont==10){
-                char x[100];
-                sprintf(x,"Relogio: %02d:%02d:%02d", relogio.hora, relogio.minuto, relogio.segundo);
-                if(label2){
-                    lv_label_set_text(label2, x);
-                    }
-                    cont = cont+1;
-             }      
-            cont = cont+1;
+            /* atualiza o label a cada segundo */
+            if (label2) {
+                char buf[32];
+                snprintf(buf, sizeof(buf),
+                         "Relogio: %02d:%02d:%02d",
+                         relogio.hora, relogio.minuto, relogio.segundo);
+                lv_label_set_text(label2, buf);
+            }
         }
-
-        }
-        else
-        {
-            ESP_LOGW(TAG_Timer, "Missed one count event");
-        }
+    } else {
+        ESP_LOGW(TAG_Timer, "Missed one count event");
     }
+}
+
 }
 
 static void ledc_task(void *arg)
