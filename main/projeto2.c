@@ -113,6 +113,7 @@ static QueueHandle_t pwm_queue = NULL;
 static SemaphoreHandle_t semaphore_pwm = NULL;
 static QueueHandle_t evento_adc = NULL;
 static QueueHandle_t evento_oled = NULL;
+static QueueHandle_t uaifi_queue = NULL;
 
 static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
 static void adc_calibration_deinit(adc_cali_handle_t handle);
@@ -122,8 +123,8 @@ lv_obj_t *label = NULL;
 lv_obj_t *label2 = NULL;
 
 /* ———— Em algum header ou no topo do .c ———— */
-//volatile bool mqtt_led2_override = false; // indica que veio comando MQTT
-//volatile uint32_t mqtt_led2_duty = 0;     // duty desejado (0 = off; duty_max = on)
+// volatile bool mqtt_led2_override = false; // indica que veio comando MQTT
+// volatile uint32_t mqtt_led2_duty = 0;     // duty desejado (0 = off; duty_max = on)
 
 // Mesa de trabalho do botão
 // ISR -> interrupt service routine
@@ -151,9 +152,13 @@ typedef struct
 {
     bool automatizado; // true = modo automático; false = modo manual
     int16_t duty;      // valor de incremento (em modo manual, >0 significa incrementar)
+} PWM_elements_t;
+
+typedef struct
+{
     int16_t mqtt_led2_duty;
     bool mqtt_led2_override;
-} PWM_elements_t;
+} uaifi_elements_t;
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -438,7 +443,7 @@ static void ledc_task(void *arg)
         .timer_sel = LEDC_TIMER,        // não sei
         .intr_type = LEDC_INTR_DISABLE, // desabilita interrupção
         .gpio_num = LEDC_OUTPUT_IO_16,  // led de saida do pwm
-        .duty = 0,                   // Set duty to 0%  //escolhe o duty fora da do gatilho de duty
+        .duty = 0,                      // Set duty to 0%  //escolhe o duty fora da do gatilho de duty
         .hpoint = 0};
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_led2)); // avisa se der problema
     // ==============================================================================
@@ -455,12 +460,16 @@ static void ledc_task(void *arg)
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_led1)); // avisa se der problema
 
     PWM_elements_t pwm_config;
+    uaifi_elements_t uaifi_config;
 
     while (1)
     {
         if (xSemaphoreTake(semaphore_pwm, portMAX_DELAY))
         {
             if (xQueueReceive(pwm_queue, &pwm_config, 0)) // pdMS_TO_TICKS(2000)))
+            {
+            }
+            if (xQueueReceive(uaifi_queue, &uaifi_config, 0)) // pdMS_TO_TICKS(2000)))
             {
             }
             if (pwm_config.automatizado)
@@ -502,16 +511,15 @@ static void ledc_task(void *arg)
             }
 
             /* 2. Agora decida o que fazer com o LED2 */
-            if (pwm_config.mqtt_led2_override)
+            if (uaifi_config.mqtt_led2_override)
             {
                 /* Comando MQTT tem prioridade absoluta */
-                ledc_channel_led2.duty = pwm_config.mqtt_led2_duty;
-                pwm_config.mqtt_led2_override = false; // zera o flag até o próximo comando
+                ledc_channel_led2.duty = uaifi_config.mqtt_led2_duty;
+                uaifi_config.mqtt_led2_override = false; // zera o flag até o próximo comando
+                /* 3. Atualiza o hardware do LED2 (único ponto de acesso!) */
+                ledc_set_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel, ledc_channel_led2.duty);
+                ledc_update_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel);
             }
-
-            /* 3. Atualiza o hardware do LED2 (único ponto de acesso!) */
-            ledc_set_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel, ledc_channel_led2.duty);
-            ledc_update_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel);
         }
     }
 }
@@ -785,7 +793,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
 
-        PWM_elements_t pwm_config = {
+        uaifi_elements_t uaifi_config = {
             .mqtt_led2_duty = 0,
             .mqtt_led2_override = false,
         };
@@ -797,19 +805,20 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             /* event->data não é terminada em ‘\0’; compare só 2 bytes               */
             if (strncmp(event->data, "on", 2) == 0)
             {
-                pwm_config.mqtt_led2_duty = 8000; // acender
+                uaifi_config.mqtt_led2_duty = 8000; // acender
             }
-            else if(strncmp(event->data, "off", 2) == 0)
+            else if (strncmp(event->data, "off", 2) == 0)
             {
-                pwm_config.mqtt_led2_duty = 0; // apagar
-            }else
+                uaifi_config.mqtt_led2_duty = 0; // apagar
+            }
+            else
             {
-                pwm_config.mqtt_led2_duty = 0; // apagar
+                uaifi_config.mqtt_led2_duty = 0; // apagar
                 ESP_LOGI(TAG_wifi, "Menssagem não identificada, led apagado");
             }
 
-            pwm_config.mqtt_led2_override = true;     // sinaliza novo comando
-            xQueueSendToBack(pwm_queue, &pwm_config, portMAX_DELAY);
+            uaifi_config.mqtt_led2_override = true; // sinaliza novo comando
+            xQueueSendToBack(uaifi_queue, &uaifi_config, portMAX_DELAY);
         }
         break;
     case MQTT_EVENT_ERROR:
@@ -945,7 +954,7 @@ void app_main(void)
     evento_timer = xQueueCreate(10, sizeof(propriedades_fila_timer_t));
     // Cria fila de comunicação GPIO → PWM
     pwm_queue = xQueueCreate(10, sizeof(PWM_elements_t));
-
+    uaifi_queue = xQueueCreate(10, sizeof(uaifi_elements_t));
     // Cria semáforo binário para sincronização a cada 100 ms
     semaphore_pwm = xSemaphoreCreateBinary();
 
