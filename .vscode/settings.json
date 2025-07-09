@@ -3,7 +3,7 @@
   "idf.espIdfPathWin": "C:\\Users\\sistemembarcados\\esp\\v5.4.1\\esp-idf",
   "idf.toolsPathWin": "C:\\Users\\sistemembarcados\\.espressif",
   "idf.pythonInstallPath": "C:\\Users\\sistemembarcados\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
-  "idf.portWin": "COM9",
+  "idf.portWin": "COM20",
   "idf.flashType": "UART",
   "files.associations": {
     "random": "c"

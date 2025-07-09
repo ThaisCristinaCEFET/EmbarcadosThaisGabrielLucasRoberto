@@ -70,6 +70,7 @@ SEÇÃO DE CONFIGURAÇÃO DE LEDS DO PWM
 #define LEDC_OUTPUT_IO_17 (17)          // Define the output GPIO
 #define LEDC_OUTPUT_IO_26 (26)          // Define the output GPIO
 #define LEDC_CHANNEL LEDC_CHANNEL_0     // oq o canal faz
+#define LEDC_CHANNEL3 LEDC_CHANNEL_2     // oq o canal faz
 #define LEDC_DUTY_RES LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
 #define LEDC_DUTY (4096)                // Set duty to 50%. (2 ** 13) * 50% = 4096 muda a intencidade do brilho
 #define LEDC_FREQUENCY (5000)           // Frequency in Hertz. Set frequency at 4 kHz
@@ -419,6 +420,17 @@ static void ledc_task(void *arg)
         .duty = 4000,                   // Set duty to 0%  //escolhe o duty fora da do gatilho de duty
         .hpoint = 0};
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_led0)); // avisa se der problema
+
+    // Prepare and then apply the LEDC conctados
+    ledc_channel_config_t ledc_channel_led2 = {
+        .speed_mode = LEDC_MODE,        // config o modo de operação
+        .channel = LEDC_CHANNEL3,        // aplica o canal
+        .timer_sel = LEDC_TIMER,        // não sei
+        .intr_type = LEDC_INTR_DISABLE, // desabilita interrupção
+        .gpio_num = LEDC_OUTPUT_IO_16,  // led de saida do pwm
+        .duty = 4000,                   // Set duty to 0%  //escolhe o duty fora da do gatilho de duty
+        .hpoint = 0};
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel_led2)); // avisa se der problema
     // ==============================================================================
 
     // Prepare and then apply the LEDC PWM channel configuration
@@ -453,6 +465,10 @@ static void ledc_task(void *arg)
                 ledc_channel_led1.duty = ledc_channel_led0.duty;
                 ledc_set_duty(ledc_channel_led1.speed_mode, ledc_channel_led1.channel, ledc_channel_led1.duty);
                 ledc_update_duty(ledc_channel_led1.speed_mode, ledc_channel_led1.channel);
+
+                ledc_channel_led2.duty = ledc_channel_led0.duty;
+                ledc_set_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel, ledc_channel_led2.duty);
+                ledc_update_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel);
             }
             else
             {
@@ -465,6 +481,10 @@ static void ledc_task(void *arg)
                 ledc_channel_led1.duty = ledc_channel_led0.duty;
                 ledc_set_duty(ledc_channel_led1.speed_mode, ledc_channel_led1.channel, ledc_channel_led1.duty);
                 ledc_update_duty(ledc_channel_led1.speed_mode, ledc_channel_led1.channel);
+
+                ledc_channel_led2.duty = ledc_channel_led0.duty;
+                ledc_set_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel, ledc_channel_led2.duty);
+                ledc_update_duty(ledc_channel_led2.speed_mode, ledc_channel_led2.channel);
             }
             if (pwm_config.duty >= duty_max)
             {
@@ -607,10 +627,10 @@ static void lvgl_escrita(lv_disp_t *disp)
 
     label2 = lv_label_create(scr);
 
-    lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR); /* Circular scroll */
-    lv_label_set_text(label, "EMBARCADOS");
+    //lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR); /* Circular scroll */
+    //lv_label_set_text(label, "EMBARCADOS");
     /* Size of the screen (if you use rotation 90 or 270, please set disp->driver->ver_res) */
-    lv_obj_set_width(label, disp->driver->hor_res);
+    //lv_obj_set_width(label, disp->driver->hor_res);
     lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 0);
     //char x[100];
     //int cont = 0;
@@ -798,7 +818,7 @@ static void mqtt_app_start(void)
     esp_mqtt_client_start(client);
 }
 
-static void task_uaifi(void)
+    static void uaifi(void)
 {
     ESP_LOGI(TAG_wifi, "[APP] Startup..");
     ESP_LOGI(TAG_wifi, "[APP] Free memory: %" PRIu32 " bytes", esp_get_free_heap_size());
@@ -866,7 +886,7 @@ void app_main(void)
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 
-    task_uaifi();
+    uaifi();
 
     // create a queue to handle gpio event from isr
     evento_botao = xQueueCreate(10, sizeof(uint32_t));
