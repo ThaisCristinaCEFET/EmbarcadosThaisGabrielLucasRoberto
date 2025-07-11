@@ -802,7 +802,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         if (strncmp(event->topic, "/topic/qos0", event->topic_len) == 0)
         {
 
-            /* event->data não é terminada em ‘\0’; compare só 2 bytes               */
+            /* event->data não é terminada em ‘\0’; compare só 2 bytes
             if (strncmp(event->data, "on", 2) == 0)
             {
                 uaifi_config.mqtt_led2_duty = 8000; // acender
@@ -815,6 +815,42 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             {
                 uaifi_config.mqtt_led2_duty = 0; // apagar
                 ESP_LOGI(TAG_wifi, "Menssagem não identificada, led apagado");
+            }*/
+
+            if (strncmp(event->topic, "/topic/qos0", event->topic_len) == 0)
+            {
+                // Copiar o conteúdo de event->data para um buffer com '\0'
+                char data_str[16];
+                int len = event->data_len < sizeof(data_str) - 1 ? event->data_len : sizeof(data_str) - 1;
+                strncpy(data_str, event->data, len);
+                data_str[len] = '\0';
+
+                // Converter para número com validação
+                char *endptr;
+                int duty = strtol(data_str, &endptr, 10);
+
+                // Verifica se a string era de fato um número válido
+                if (*endptr != '\0')
+                {
+                    // Caracteres não numéricos encontrados após conversão
+                    duty = 0;
+                    ESP_LOGW(TAG_wifi, "Mensagem inválida recebida: '%s'. Duty zerado.", data_str);
+                }
+                else
+                {
+                    // (Opcional) Limitar valor ao intervalo permitido
+                    if (duty < 0)
+                        duty = 0;
+                    else if (duty > 8191)
+                        duty = 8191;
+
+                    ESP_LOGI(TAG_wifi, "Duty atualizado via MQTT: %d", duty);
+                }
+
+                // Aplica o valor final (ou zero se inválido)
+                uaifi_config.mqtt_led2_duty = duty;
+                //uaifi_config.mqtt_led2_override = true;
+                //xQueueSendToBack(uaifi_queue, &uaifi_config, portMAX_DELAY);
             }
 
             uaifi_config.mqtt_led2_override = true; // sinaliza novo comando
