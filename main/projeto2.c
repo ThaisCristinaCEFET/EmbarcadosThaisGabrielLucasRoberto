@@ -34,6 +34,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "protocol_examples_common.h"
+#include "vl53l0x.h"
 
 #include "esp_log.h"
 #include "mqtt_client.h"
@@ -107,6 +108,12 @@ SEÇÃO DE CONFIGURAÇÃO DO I2C
 #define LCD_CMD_BITS 8
 #define LCD_PARAM_BITS 8
 
+// ======== CONFIGURAÇÃO PINOS I2C TRENA ========
+#define I2C_MASTER_PORT I2C_NUM_0
+#define I2C_MASTER_SDA_IO 19 // ajuste conforme sua ligação
+#define I2C_MASTER_SCL_IO 18 // ajuste conforme sua ligação
+#define I2C_MASTER_FREQ_HZ 100000
+
 static QueueHandle_t evento_botao = NULL;
 static QueueHandle_t evento_timer = NULL;
 static QueueHandle_t pwm_queue = NULL;
@@ -114,6 +121,7 @@ static SemaphoreHandle_t semaphore_pwm = NULL;
 static QueueHandle_t evento_adc = NULL;
 static QueueHandle_t evento_oled = NULL;
 static QueueHandle_t uaifi_queue = NULL;
+static QueueHandle_t evento_trena = NULL;
 
 static bool adc_calibration_init(adc_unit_t unit, adc_channel_t channel, adc_atten_t atten, adc_cali_handle_t *out_handle);
 static void adc_calibration_deinit(adc_cali_handle_t handle);
@@ -158,7 +166,15 @@ typedef struct
 {
     int16_t mqtt_led2_duty;
     bool mqtt_led2_override;
+    bool mqtt_trena;
+    char texto_trena[50];
 } uaifi_elements_t;
+
+typedef struct
+{
+    bool mqtt_trena;
+    char texto_trena[50];
+} trena_elements_t;
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -669,7 +685,7 @@ static void lvgl_escrita(lv_disp_t *disp)
 
     lv_obj_align(label2, LV_ALIGN_BOTTOM_MID, 0, 0);
 }
-
+esp_mqtt_client_handle_t client;
 static void oled_task(void *arg)
 {
     ESP_LOGI(TAG_led, "Initialize I2C bus");
@@ -755,10 +771,21 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 {
     ESP_LOGD(TAG_wifi, "Event dispatched from event loop base=%s, event_id=%" PRIi32 "", base, event_id);
     esp_mqtt_event_handle_t event = event_data;
-    esp_mqtt_client_handle_t client = event->client;
+    client = event->client;
     int msg_id;
     switch ((esp_mqtt_event_id_t)event_id)
     {
+
+        uaifi_elements_t uaifi_config = {
+            .mqtt_led2_duty = 0,
+            .mqtt_led2_override = false,
+        };
+
+        trena_elements_t trena_config = {
+            .mqtt_trena = false,
+            .texto_trena = "teste",
+        };
+
     case MQTT_EVENT_CONNECTED:
         ESP_LOGI(TAG_wifi, "MQTT_EVENT_CONNECTED");
         msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
@@ -767,10 +794,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
         ESP_LOGI(TAG_wifi, "sent subscribe successful, msg_id=%d", msg_id);
 
-        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
+        msg_id = esp_mqtt_client_subscribe(client, "/topic/trena", 1);
         ESP_LOGI(TAG_wifi, "sent subscribe successful, msg_id=%d", msg_id);
 
-        msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
+        msg_id = esp_mqtt_client_unsubscribe(client, "/topic/trena");
         ESP_LOGI(TAG_wifi, "sent unsubscribe successful, msg_id=%d", msg_id);
         break;
     case MQTT_EVENT_DISCONNECTED:
@@ -781,6 +808,24 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG_wifi, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
         msg_id = esp_mqtt_client_publish(client, "/topic/qos0", "data", 0, 0, 0);
         ESP_LOGI(TAG_wifi, "sent publish successful, msg_id=%d", msg_id);
+
+        ESP_LOGI(TAG_wifi, "MQTT_EVENT_SUBSCRIBED, msg_id=%d", event->msg_id);
+        msg_id = esp_mqtt_client_publish(client, "/topic/trena", "init", 0, 0, 0);
+        ESP_LOGI(TAG_wifi, "sent publish successful, msg_id=%d", msg_id);
+
+        // uaifi_elements_t uaifi_config;
+
+        /* if (xQueueReceive(evento_trena, &trena_config, 0)) // pdMS_TO_TICKS(2000)))
+         {
+
+         }*/
+
+        /*if (strncmp(event->topic, "/topic/trena", event->topic_len) == 0)
+        {
+            msg_id = esp_mqtt_client_publish(client, "/topic/trena", uaifi_config.texto_trena, 0, 0, 0);
+            uaifi_config.mqtt_trena = false;
+        }*/
+
         break;
     case MQTT_EVENT_UNSUBSCRIBED:
         ESP_LOGI(TAG_wifi, "MQTT_EVENT_UNSUBSCRIBED, msg_id=%d", event->msg_id);
@@ -793,10 +838,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
 
-        uaifi_elements_t uaifi_config = {
+        /*uaifi_elements_t uaifi_config = {
             .mqtt_led2_duty = 0,
             .mqtt_led2_override = false,
-        };
+        };*/
 
         /* Aceita “on”/“off” no tópico controle/led2 */
         if (strncmp(event->topic, "/topic/qos0", event->topic_len) == 0)
@@ -849,8 +894,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
                 // Aplica o valor final (ou zero se inválido)
                 uaifi_config.mqtt_led2_duty = duty;
-                //uaifi_config.mqtt_led2_override = true;
-                //xQueueSendToBack(uaifi_queue, &uaifi_config, portMAX_DELAY);
+                // uaifi_config.mqtt_led2_override = true;
+                // xQueueSendToBack(uaifi_queue, &uaifi_config, portMAX_DELAY);
             }
 
             uaifi_config.mqtt_led2_override = true; // sinaliza novo comando
@@ -946,6 +991,94 @@ static void uaifi(void)
     mqtt_app_start();
 }
 
+static void trena_task(void *arg)
+{
+
+    /*i2c_config_t cfg = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = I2C_MASTER_SDA_IO,
+        .scl_io_num = I2C_MASTER_SCL_IO,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = I2C_MASTER_FREQ_HZ
+    };
+    i2c_param_config(I2C_MASTER_PORT, &cfg);
+    i2c_driver_install(I2C_MASTER_PORT, cfg.mode, 0, 0, 0);*/
+
+    int8_t port1 = 0;
+    int8_t scl1 = 18;
+    int8_t sda1 = 19;
+    int8_t xshut1 = -1;
+    uint8_t address1 = 0x29;
+    uint8_t io_2v81 = -1;
+    vl53l0x_t *x = NULL;
+    x = vl53l0x_config(port1, scl1, sda1, xshut1, address1, io_2v81);
+
+    const char *teste = vl53l0x_init(x);
+
+    printf("\ninit:%s\n", teste);
+    // printf("\n");
+    // uint8_t adde = vl53l0x_getAddress (x);
+    // printf("Endereco: %d\n", adde);
+
+    uint8_t valor = 0;
+    uint8_t reg = 10;
+    // valor = vl53l0x_readReg8Bit (x, reg);
+
+    static const char *TAG = "example";
+
+    uint16_t val = vl53l0x_readRangeSingleMillimeters(x);
+    printf("medida: %d\n", val);
+
+    // P_LOGI(TAG, "Medição: %d", valor);
+
+    // vl53l0x_startContinuous(x, 100);
+
+    // 6) Loop de leitura
+
+    trena_elements_t trena_config = {
+        .mqtt_trena = false,
+        .texto_trena = "teste",
+    };
+
+    int cont = 0;
+    bool escrita = false;
+
+    while (1)
+    {
+
+        uint16_t dist = vl53l0x_readRangeSingleMillimeters(x);
+        if (vl53l0x_timeoutOccurred(x))
+        {
+            // escrita = false;
+            printf("Timeout no single shot\n");
+        }
+        else
+        {
+            // escrita = false;
+            printf("Distância (single): %d mm\n", dist);
+            trena_config.mqtt_trena = true;
+            snprintf(trena_config.texto_trena, sizeof(trena_config.texto_trena),
+                     "D: %d mm\n", dist);
+            cont = cont + 1;
+
+            if (escrita)
+            {
+                esp_mqtt_client_publish(client, "/topic/trena", trena_config.texto_trena, 0, 1, 0);
+                escrita = false;
+            }
+            // xQueueSendToBack(evento_trena, &trena_config, portMAX_DELAY);
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        if (cont == 60)
+        {
+            cont = 0;
+            escrita = true;
+        }
+    }
+}
+
 void app_main(void)
 {
     /* Print chip information */
@@ -999,13 +1132,18 @@ void app_main(void)
 
     // cria fila oled
     evento_oled = xQueueCreate(10, sizeof(uint64_t));
+    evento_trena = xQueueCreate(10, sizeof(uint64_t));
+
+    printf("aqui\n");
 
     // start gpio task
     xTaskCreate(gpio_task_led_botao, "gpio_task_intr", 2048, NULL, 10, NULL);
     xTaskCreate(gptimer_task, "gptimer_task_intr", 2048, NULL, 10, NULL);
     xTaskCreate(ledc_task, "ledc_task", 2048, NULL, 10, NULL);
     xTaskCreate(adc_task, "adc_task", 4096, NULL, 10, NULL);
-    xTaskCreate(oled_task, "oled_task", 4096, NULL, 10, NULL);
+    xTaskCreate(trena_task, "trena_task", 4096, NULL, 10, NULL);
+
+    // xTaskCreate(oled_task, "oled_task", 4096, NULL, 10, NULL);
 
     ESP_LOGI(TAG, "Restarting now.");
     fflush(stdout);

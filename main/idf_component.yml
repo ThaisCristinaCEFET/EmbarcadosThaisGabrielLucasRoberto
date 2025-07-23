@@ -1,11 +1,12 @@
 dependencies:
-  lvgl/lvgl: "8.3.0"
-  esp_lcd_sh1107: "^1"
-  esp_lvgl_port: "^1"
+  lvgl/lvgl: 8.3.0
+  esp_lcd_sh1107: ^1
+  esp_lvgl_port: ^1
 
   protocol_examples_common:
     path: ${IDF_PATH}/examples/common_components/protocol_examples_common
   espressif/esp_wifi_remote:
-    version: ">=0.1.12"
+    version: '>=0.1.12'
     rules:
-      - if: "target in [esp32p4, esp32h2]"
+    - if: target in [esp32p4, esp32h2]
+  espp/vl53l: ^1.0.17

@@ -1,4 +1,70 @@
 dependencies:
+  espp/base_component:
+    component_hash: f4224d4295dab7b61a2a20c8897bc1f502ee692aaa829c818dd416fa2e3c2dfd
+    dependencies:
+    - name: espp/logger
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.17
+  espp/base_peripheral:
+    component_hash: 4be28f02f31e77442d37dd6f63b1998957c321aa2928015c8db38203188db8f6
+    dependencies:
+    - name: espp/base_component
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.17
+  espp/format:
+    component_hash: fe1248e361db8e2ac39048ed7e3406087c8bbc4dc952a6020bc76080bc8a226e
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.17
+  espp/logger:
+    component_hash: 407e34218f43a3980953ca805f5e81515757fcefafa3ab763163518162ba7572
+    dependencies:
+    - name: espp/format
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 1.0.17
+  espp/vl53l:
+    component_hash: 279d982a4a8322bfd5ae540ba39de1cb5974e63499c185a32ce8a4e09735997c
+    dependencies:
+    - name: espp/base_peripheral
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0'
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.17
   espressif/esp_lcd_sh1107:
     component_hash: 9cc00a4d066e3e1d120fd2006d30612766488379b820804092a9bfedb3c1f93c
     dependencies:
@@ -41,10 +107,11 @@ dependencies:
       type: local
     version: '*'
 direct_dependencies:
+- espp/vl53l
 - espressif/esp_lcd_sh1107
 - espressif/esp_lvgl_port
 - lvgl/lvgl
 - protocol_examples_common
-manifest_hash: 79b5b37d5767b8d3274d59dd6db8c8326f676eb3ef8982059007c7098dfd5695
+manifest_hash: 39c304348fe15d3f3e57e2783d49fd69b6aa02046990937dd12682889895d484
 target: esp32
 version: 2.0.0
